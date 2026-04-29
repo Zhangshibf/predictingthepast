@@ -29,7 +29,7 @@ from jaxline import utils as jl_utils
 import numpy as np
 import optax
 from predictingthepast.models.model import Model
-from predictingthepast.train import dataloader
+from train import dataloader
 from predictingthepast.util import region_names
 import predictingthepast.util.alphabet as alphabet_util
 import predictingthepast.util.loss as loss_util
@@ -88,32 +88,19 @@ class Experiment(experiment.AbstractExperiment):
 
     # Create alphabet
     alphabet_kwargs = dict(self.config.alphabet)
-    if 'latin' in self.config.dataset.train_language:
-      self._alphabet = alphabet_util.LatinAlphabet(**alphabet_kwargs)
-    elif 'greek' in self.config.dataset.train_language:
-      self._alphabet = alphabet_util.GreekAlphabet(**alphabet_kwargs)
+    self._alphabet = alphabet_util.LatinAlphabet(**alphabet_kwargs)
 
     # Create region mapping
     self._region_map = {'names': [], 'names_inv': {}}
-    if 'latin' in self.config.dataset.train_language:
-      regions_latin = set()
-      with open(self.config.dataset.latin_region_path, 'r') as fl:
-        for region_name in fl.read().strip().split('\n'):
-          regions_latin.add(region_names.region_name_filter(region_name))
-      regions = regions_latin
-      logging.info('Loaded %d Latin regions.', len(regions))
 
-    elif 'greek' in self.config.dataset.train_language:
-      regions_greek = set()
-      with open(self.config.dataset.greek_region_path, 'r') as fg:
-        for region_name in fg.read().strip().split('\n'):
-          regions_greek.add(region_names.region_name_filter(region_name))
-      regions = regions_greek
-      logging.info('Loaded %d Greek regions.', len(regions))
-    else:
-      raise ValueError(
-          f'Unsupported train language: {self.config.dataset.train_language}'
-      )
+    regions_latin = set()
+    with open(self.config.dataset.latin_region_path, 'r') as fl:
+        for region_name in fl.read().strip().split('\n'):
+            regions_latin.add(region_names.region_name_filter(region_name))
+    regions = regions_latin
+    logging.info('Loaded %d Latin regions.', len(regions))
+
+
 
     for r_i, r in enumerate(sorted(regions)):
       self._region_map['names_inv'][r] = r_i
