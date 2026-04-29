@@ -29,7 +29,7 @@ from jaxline import utils as jl_utils
 import numpy as np
 import optax
 from predictingthepast.models.model import Model
-from predictingthepast.train import dataloader
+import dataloader
 from predictingthepast.util import region_names
 import predictingthepast.util.alphabet as alphabet_util
 import predictingthepast.util.loss as loss_util

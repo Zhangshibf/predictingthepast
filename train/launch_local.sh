@@ -26,6 +26,8 @@ export NCCL_DEBUG=INFO                        # Enable NCCL debugging (for multi
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
+cd /leonardo_work/IscrC_CoIta/predictingthepast/train
+
 echo "---------------------------------------"
 echo "Starting the job"
 echo "Time: $(date)"
