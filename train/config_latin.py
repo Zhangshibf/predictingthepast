@@ -177,7 +177,7 @@ def get_config():
   config.log_train_data_interval = 10
   config.save_checkpoint_interval = 300
   config.best_model_eval_metric = 'score/eval'
-  config.checkpoint_dir = '/tmp/predictingthepast_checkpoints'
+  config.checkpoint_dir = '/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint'
   config.train_checkpoint_all_hosts = False
 
   # Prevents accidentally setting keys that aren't recognized (e.g. in tests).
