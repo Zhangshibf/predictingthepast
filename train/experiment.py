@@ -17,7 +17,7 @@ import copy
 import functools
 import glob
 import os
-
+import pickle
 from absl import app
 from absl import flags
 from absl import logging
@@ -146,27 +146,71 @@ class Experiment(experiment.AbstractExperiment):
     return scalars
 
   def _initialize_train(self, rng):
-    # Check we haven't already restored params
-    if self._params is None:
-      logging.info(
-          'Initializing parameters rather than restoring from checkpoint.'
-      )
+      # Check we haven't already restored params from a jaxline checkpoint
+      # (i.e. resuming a previous fine-tuning run).
+      if self._params is not None:
+          return
+
+      # Build one batch of data — needed either way (for shape inference on
+      # fresh init, or just to advance the iterator consistently).
       batch = next(self._build_train_input())
 
-      rng = jl_utils.get_first(rng)
-      params_rng, dropout_rng = jax.random.split(rng)
-      params_rng = jl_utils.bcast_local_devices(params_rng)
-      dropout_rng = jl_utils.bcast_local_devices(dropout_rng)
-      init_net = jax.pmap(
-          functools.partial(self.forward.init, is_training=True)
-      )
-      self._params = init_net(
-          {'params': params_rng, 'dropout': dropout_rng},
-          text_char=batch['text_char'],
-          vision_img=batch.get('vision_img'),
-          vision_available=batch.get('vision_available'),
-      )
+      pretrained_path = self.config.get('pretrained_checkpoint_path', None)
 
+      if pretrained_path and os.path.exists(pretrained_path):
+          # ----------------------------------------------------------------
+          # Fine-tuning path: load the released Aeneas pickle.
+          # ----------------------------------------------------------------
+          logging.info(
+              'Loading pretrained params from %s', pretrained_path
+          )
+          with open(pretrained_path, 'rb') as f:
+              checkpoint = pickle.load(f)
+
+          # Sanity check: the released model_config must match the one we
+          # built self.forward with, otherwise parameter shapes won't line
+          # up. We only check the keys that affect parameter shapes.
+          ckpt_cfg = checkpoint['model_config']
+          cur_cfg = dict(self.config.model)
+          shape_keys = [
+              'emb_dim', 'qkv_dim', 'mlp_dim', 'num_layers', 'num_heads',
+              'vocab_char_size', 'output_regions', 'output_date',
+              'max_len', 'model_type', 'prepend_sos',
+          ]
+          for k in shape_keys:
+              if k in ckpt_cfg and k in cur_cfg and ckpt_cfg[k] != cur_cfg[k]:
+                  raise ValueError(
+                      f'Model config mismatch on {k!r}: checkpoint has '
+                      f'{ckpt_cfg[k]!r}, current config has {cur_cfg[k]!r}. '
+                      'Parameter shapes will not match.'
+                  )
+
+          # Overwrite the region map with the one from the checkpoint, so
+          # the region head's output indices align with the pretrained
+          # weights even though we've disabled the region loss.
+          self._region_map = checkpoint['region_map']
+          logging.info(
+              'Loaded region map with %d regions from checkpoint.',
+              len(self._region_map['names']),
+          )
+
+          # Replicate params across local devices for pmap.
+          # The pickle stores a single-device pytree; pmap expects each
+          # leaf to have a leading device axis.
+          params = checkpoint['params']
+          self._params = jax.device_put_replicated(
+              params, jax.local_devices()
+          )
+
+      else:
+          print(pretrained_path)
+          print(os.path.exists(pretrained_path))
+          raise ValueError("Cannot load the checkpoin! Oh no oh no oh no")
+
+      # Initialize optimizer state from whatever params we ended up with
+      # (loaded or freshly initialized). This is correct for both paths:
+      # a fine-tuning run starts with fresh moment buffers, which is what
+      # we want when changing the learning-rate schedule.
       init_opt = jax.pmap(self._opt_init)
       self._opt_state = init_opt(self._params)
 
