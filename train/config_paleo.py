@@ -73,6 +73,7 @@ def get_config():
       dict(
           config=dict(
               random_seed=4,
+              pretrained_checkpoint_path='/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint.pkl',
               random_mode_train=config.get_ref('random_mode_train'),
               random_mode_eval=config.get_ref('random_mode_eval'),
               # ---------------------------------------------------------------
