@@ -73,7 +73,7 @@ def get_config():
       dict(
           config=dict(
               random_seed=4,
-              pretrained_checkpoint_path='/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint.pkl',
+              pretrained_checkpoint_path='/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint/aeneas_117149994_2.pkl',
               random_mode_train=config.get_ref('random_mode_train'),
               random_mode_eval=config.get_ref('random_mode_eval'),
               # ---------------------------------------------------------------
@@ -233,7 +233,7 @@ def get_config():
   # mask_acc only (region_acc is 0/eps because region_available is always
   # False on our dataset, and date_l1 is 0 for the same reason).
   config.best_model_eval_metric = 'latin/score/eval'
-  config.checkpoint_dir = '/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint'
+  config.checkpoint_dir = '/leonardo_work/IscrC_CoIta/predictingthepast/finetuned'
   config.train_checkpoint_all_hosts = False
 
   config.lock()
