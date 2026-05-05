@@ -125,6 +125,8 @@ def get_config():
                   latin_dataset_path='data/aeneas_train_dev.json',
                   # iphi.json must EXIST (experiment.py opens it
                   # unconditionally) but can contain an empty array `[]`
+                  greek_dataset_path='data/iphi.json',
+                  greek_region_path='data/iphi-region-sub.txt',
                   latin_region_path='data/led-region-sub.txt',
                   context_char_min=25,
                   context_char_max=cm.get_ref('context_char_max'),
