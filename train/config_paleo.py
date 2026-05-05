@@ -58,7 +58,7 @@ def get_config():
   # ---------------------------------------------------------------------------
   # Distributed setup. Adjust to match your hardware.
   # ---------------------------------------------------------------------------
-  local_batch_size = 8
+  local_batch_size = 32
   num_devices = 1
   config.train_batch_size = local_batch_size * num_devices
 
@@ -98,7 +98,7 @@ def get_config():
                       peak_value=1e-4,      # was 3e-3 (pretraining)
                       init_value=1e-7,
                       warmup_steps=500,     # was 4_000
-                      decay_steps=50_000,   # was 1_000_000
+                      decay_steps=15_000,   # was 1_000_000
                       end_value=1e-6,
                   ),
                   clip_adaptive=False,
@@ -233,9 +233,9 @@ def get_config():
   # ---------------------------------------------------------------------------
   # Training loop.
   # ---------------------------------------------------------------------------
-  config.training_steps = 50_000        # was 1_000_000
+  config.training_steps = 20_000        # was 1_000_000
   config.log_train_data_interval = 10
-  config.save_checkpoint_interval = 300
+  config.save_checkpoint_interval = 200
   # We disabled date+region, so the original score formula
   # (mask_acc + region_acc - 0.01 * date_l1) reduces effectively to
   # mask_acc only (region_acc is 0/eps because region_available is always
