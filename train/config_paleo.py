@@ -21,7 +21,16 @@ Differences vs. the released `config_latin.py`:
     pretraining setup so that the region head's parameter shape matches
     the released checkpoint. The region loss is masked out anyway because
     we leave `region_sub` empty in our dataset (region_available=False).
-  * Vision is OFF (it already was in the released config).
+  * Vision is ON in the *config*, but no images are actually fed: the
+    dataloader produces a zero image with `vision_available=False` for
+    every sample (because `data/img-20231005/` contains no .jpg files
+    matching our `record_number`s). Setting vision=True is required
+    because the released checkpoint was trained with vision on, so its
+    region head's first Dense kernel is (768, 384) rather than (384, 384).
+    With vision=True + zeroed images, that kernel loads cleanly and the
+    pretrained text-to-region projection (the first 384 rows) is
+    preserved. The ResNet runs on zeros and contributes nothing — wasted
+    compute, but harmless.
   * NSP is OFF (already was).
   * UNK is ON: it's a cheap auxiliary that helps the restoration head
     learn to reason about the *length* of unknown lacunae.
@@ -63,7 +72,7 @@ def get_config():
           date_min=-800,
           date_interval=10,
           date_bins=160,
-          vision=False,
+          vision=True,
           prepend_sos=1,
       )
   )
@@ -116,9 +125,6 @@ def get_config():
                   latin_dataset_path='data/aeneas_train_dev.json',
                   # iphi.json must EXIST (experiment.py opens it
                   # unconditionally) but can contain an empty array `[]`
-                  # because 'greek' is not in train/eval language lists.
-                  greek_dataset_path='data/iphi.json',
-                  greek_region_path='data/iphi-region-sub.txt',
                   latin_region_path='data/led-region-sub.txt',
                   context_char_min=25,
                   context_char_max=cm.get_ref('context_char_max'),
