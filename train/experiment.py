@@ -37,6 +37,12 @@ import predictingthepast.util.optim as optim_util
 import tensorflow_datasets.public_api as tfds
 
 
+# Populated by Experiment.__init__ so DiskCheckpointer (defined below) can
+# include them in the on-disk pickle without needing a reference to the
+# Experiment instance.
+_LATEST_EXP_INFO = {}
+
+
 FLAGS = flags.FLAGS
 
 
@@ -128,6 +134,11 @@ class Experiment(experiment.AbstractExperiment):
     # regions = regions_greek.union(regions_latin)
     logging.info('Union of %d regions in total.', len(regions))
     assert len(self._region_map['names']) == self.config.model.output_regions
+
+    # Make these visible to DiskCheckpointer so the saved pickles are
+    # drop-in compatible with inference_example.py.
+    _LATEST_EXP_INFO['model_config'] = dict(self.config.model)
+    _LATEST_EXP_INFO['region_map'] = self._region_map
 
   def optimizer(self):
     config_opt = self.config.optimizer
@@ -747,6 +758,69 @@ class Experiment(experiment.AbstractExperiment):
     return summary
 
 
+class DiskCheckpointer(jl_utils.InMemoryCheckpointer):
+  """Wraps InMemoryCheckpointer to also persist snapshots to disk.
+
+  Each save() writes a pickle file to config.checkpoint_dir with the same
+  schema as the released Aeneas checkpoint (params, model_config,
+  region_map), so saved files are immediately usable by inference_example.py.
+  """
+
+  def __init__(self, config, mode):
+    super().__init__(config, mode)
+    self._checkpoint_dir = config.checkpoint_dir
+    os.makedirs(self._checkpoint_dir, exist_ok=True)
+
+  def save(self, ckpt_series: str) -> None:
+    # Run the in-memory save (handles snapshotting, rotation, logging).
+    super().save(ckpt_series)
+
+    # Pull the snapshot we just stored out of the global dict.
+    series = jl_utils.GLOBAL_CHECKPOINT_DICT[ckpt_series]
+    snapshot = series.history[-1]
+    snap_id = snapshot.id
+    snap_state = snapshot.pickle_nest.to_dict()
+
+    exp_state = snap_state.get('experiment_module', {})
+
+    # _params is replicated across devices; take device 0 and bring to host.
+    params = exp_state.get('_params', None)
+    if params is not None:
+      params = jax.tree_util.tree_map(
+          lambda x: x[0] if hasattr(x, 'ndim') and x.ndim > 0 else x, params
+      )
+      params = jax.device_get(params)
+
+    payload = {
+        'params': params,
+        'model_config': _LATEST_EXP_INFO.get('model_config'),
+        'region_map': _LATEST_EXP_INFO.get('region_map'),
+        'global_step': exp_state.get('_global_step', None),
+    }
+
+    out_path = os.path.join(
+        self._checkpoint_dir, f'{ckpt_series}_id{snap_id:04d}.pkl'
+    )
+    with open(out_path, 'wb') as f:
+      pickle.dump(payload, f)
+
+    latest_path = os.path.join(
+        self._checkpoint_dir, f'{ckpt_series}_latest.pkl'
+    )
+    with open(latest_path, 'wb') as f:
+      pickle.dump(payload, f)
+
+    logging.info('Wrote disk checkpoint to %s', out_path)
+
+
+def _make_disk_checkpointer(config, mode):
+  return DiskCheckpointer(config, mode)
+
+
 if __name__ == '__main__':
   flags.mark_flag_as_required('config')
-  app.run(functools.partial(platform.main, Experiment))
+  app.run(functools.partial(
+      platform.main,
+      Experiment,
+      checkpointer_factory=_make_disk_checkpointer,
+  ))
