@@ -70,6 +70,25 @@ class Experiment(experiment.AbstractExperiment):
     self._train_input = None
     self._eval_input = None
 
+    # ---- DEBUG: dump the model config we're about to build ----
+    import pickle as _pkl, pprint as _pp
+    print('=== MODEL CONFIG ACTUALLY USED ===')
+    _pp.pprint(dict(self.config.model))
+
+    _ckpt_path = self.config.get('pretrained_checkpoint_path', None)
+    if _ckpt_path:
+        with open(_ckpt_path, 'rb') as _f:
+            _ck = _pkl.load(_f)
+        print('=== CHECKPOINT MODEL CONFIG ===')
+        _pp.pprint(_ck['model_config'])
+        print('=== KEYS DIFFERING ===')
+        _cur = dict(self.config.model)
+        _ckm = dict(_ck['model_config'])
+        for _k in sorted(set(_cur) | set(_ckm)):
+            if _cur.get(_k, '<missing>') != _ckm.get(_k, '<missing>'):
+                print(f'  {_k}: current={_cur.get(_k, "<missing>")!r}  ckpt={_ckm.get(_k, "<missing>")!r}')
+    # ---- END DEBUG ----
+
     # Forward and update functions.
     self.forward = Model(**self.config.model)
     self._update_func = jax.pmap(self._update_func, axis_name='i')
