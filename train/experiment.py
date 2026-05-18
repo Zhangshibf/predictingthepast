@@ -17,7 +17,7 @@ import copy
 import functools
 import glob
 import os
-import pickle
+
 from absl import app
 from absl import flags
 from absl import logging
@@ -29,18 +29,12 @@ from jaxline import utils as jl_utils
 import numpy as np
 import optax
 from predictingthepast.models.model import Model
-import dataloader
+from predictingthepast.train import dataloader
 from predictingthepast.util import region_names
 import predictingthepast.util.alphabet as alphabet_util
 import predictingthepast.util.loss as loss_util
 import predictingthepast.util.optim as optim_util
 import tensorflow_datasets.public_api as tfds
-
-
-# Populated by Experiment.__init__ so DiskCheckpointer (defined below) can
-# include them in the on-disk pickle without needing a reference to the
-# Experiment instance.
-_LATEST_EXP_INFO = {}
 
 
 FLAGS = flags.FLAGS
@@ -76,25 +70,6 @@ class Experiment(experiment.AbstractExperiment):
     self._train_input = None
     self._eval_input = None
 
-    # ---- DEBUG: dump the model config we're about to build ----
-    import pickle as _pkl, pprint as _pp
-    print('=== MODEL CONFIG ACTUALLY USED ===')
-    _pp.pprint(dict(self.config.model))
-
-    _ckpt_path = self.config.get('pretrained_checkpoint_path', None)
-    if _ckpt_path:
-        with open(_ckpt_path, 'rb') as _f:
-            _ck = _pkl.load(_f)
-        print('=== CHECKPOINT MODEL CONFIG ===')
-        _pp.pprint(_ck['model_config'])
-        print('=== KEYS DIFFERING ===')
-        _cur = dict(self.config.model)
-        _ckm = dict(_ck['model_config'])
-        for _k in sorted(set(_cur) | set(_ckm)):
-            if _cur.get(_k, '<missing>') != _ckm.get(_k, '<missing>'):
-                print(f'  {_k}: current={_cur.get(_k, "<missing>")!r}  ckpt={_ckm.get(_k, "<missing>")!r}')
-    # ---- END DEBUG ----
-
     # Forward and update functions.
     self.forward = Model(**self.config.model)
     self._update_func = jax.pmap(self._update_func, axis_name='i')
@@ -113,19 +88,32 @@ class Experiment(experiment.AbstractExperiment):
 
     # Create alphabet
     alphabet_kwargs = dict(self.config.alphabet)
-    self._alphabet = alphabet_util.LatinAlphabet(**alphabet_kwargs)
+    if 'latin' in self.config.dataset.train_language:
+      self._alphabet = alphabet_util.LatinAlphabet(**alphabet_kwargs)
+    elif 'greek' in self.config.dataset.train_language:
+      self._alphabet = alphabet_util.GreekAlphabet(**alphabet_kwargs)
 
     # Create region mapping
     self._region_map = {'names': [], 'names_inv': {}}
-
-    regions_latin = set()
-    with open(self.config.dataset.latin_region_path, 'r') as fl:
+    if 'latin' in self.config.dataset.train_language:
+      regions_latin = set()
+      with open(self.config.dataset.latin_region_path, 'r') as fl:
         for region_name in fl.read().strip().split('\n'):
-            regions_latin.add(region_names.region_name_filter(region_name))
-    regions = regions_latin
-    logging.info('Loaded %d Latin regions.', len(regions))
+          regions_latin.add(region_names.region_name_filter(region_name))
+      regions = regions_latin
+      logging.info('Loaded %d Latin regions.', len(regions))
 
-
+    elif 'greek' in self.config.dataset.train_language:
+      regions_greek = set()
+      with open(self.config.dataset.greek_region_path, 'r') as fg:
+        for region_name in fg.read().strip().split('\n'):
+          regions_greek.add(region_names.region_name_filter(region_name))
+      regions = regions_greek
+      logging.info('Loaded %d Greek regions.', len(regions))
+    else:
+      raise ValueError(
+          f'Unsupported train language: {self.config.dataset.train_language}'
+      )
 
     for r_i, r in enumerate(sorted(regions)):
       self._region_map['names_inv'][r] = r_i
@@ -134,11 +122,6 @@ class Experiment(experiment.AbstractExperiment):
     # regions = regions_greek.union(regions_latin)
     logging.info('Union of %d regions in total.', len(regions))
     assert len(self._region_map['names']) == self.config.model.output_regions
-
-    # Make these visible to DiskCheckpointer so the saved pickles are
-    # drop-in compatible with inference_example.py.
-    _LATEST_EXP_INFO['model_config'] = dict(self.config.model)
-    _LATEST_EXP_INFO['region_map'] = self._region_map
 
   def optimizer(self):
     config_opt = self.config.optimizer
@@ -176,71 +159,27 @@ class Experiment(experiment.AbstractExperiment):
     return scalars
 
   def _initialize_train(self, rng):
-      # Check we haven't already restored params from a jaxline checkpoint
-      # (i.e. resuming a previous fine-tuning run).
-      if self._params is not None:
-          return
-
-      # Build one batch of data — needed either way (for shape inference on
-      # fresh init, or just to advance the iterator consistently).
+    # Check we haven't already restored params
+    if self._params is None:
+      logging.info(
+          'Initializing parameters rather than restoring from checkpoint.'
+      )
       batch = next(self._build_train_input())
 
-      pretrained_path = self.config.get('pretrained_checkpoint_path', None)
+      rng = jl_utils.get_first(rng)
+      params_rng, dropout_rng = jax.random.split(rng)
+      params_rng = jl_utils.bcast_local_devices(params_rng)
+      dropout_rng = jl_utils.bcast_local_devices(dropout_rng)
+      init_net = jax.pmap(
+          functools.partial(self.forward.init, is_training=True)
+      )
+      self._params = init_net(
+          {'params': params_rng, 'dropout': dropout_rng},
+          text_char=batch['text_char'],
+          vision_img=batch.get('vision_img'),
+          vision_available=batch.get('vision_available'),
+      )
 
-      if pretrained_path and os.path.exists(pretrained_path):
-          # ----------------------------------------------------------------
-          # Fine-tuning path: load the released Aeneas pickle.
-          # ----------------------------------------------------------------
-          logging.info(
-              'Loading pretrained params from %s', pretrained_path
-          )
-          with open(pretrained_path, 'rb') as f:
-              checkpoint = pickle.load(f)
-
-          # Sanity check: the released model_config must match the one we
-          # built self.forward with, otherwise parameter shapes won't line
-          # up. We only check the keys that affect parameter shapes.
-          ckpt_cfg = checkpoint['model_config']
-          cur_cfg = dict(self.config.model)
-          shape_keys = [
-              'emb_dim', 'qkv_dim', 'mlp_dim', 'num_layers', 'num_heads',
-              'vocab_char_size', 'output_regions', 'output_date',
-              'max_len', 'model_type', 'prepend_sos',
-          ]
-          for k in shape_keys:
-              if k in ckpt_cfg and k in cur_cfg and ckpt_cfg[k] != cur_cfg[k]:
-                  raise ValueError(
-                      f'Model config mismatch on {k!r}: checkpoint has '
-                      f'{ckpt_cfg[k]!r}, current config has {cur_cfg[k]!r}. '
-                      'Parameter shapes will not match.'
-                  )
-
-          # Overwrite the region map with the one from the checkpoint, so
-          # the region head's output indices align with the pretrained
-          # weights even though we've disabled the region loss.
-          self._region_map = checkpoint['region_map']
-          logging.info(
-              'Loaded region map with %d regions from checkpoint.',
-              len(self._region_map['names']),
-          )
-
-          # Replicate params across local devices for pmap.
-          # The pickle stores a single-device pytree; pmap expects each
-          # leaf to have a leading device axis.
-          params = checkpoint['params']
-          self._params = jax.device_put_replicated(
-              params, jax.local_devices()
-          )
-
-      else:
-          print(pretrained_path)
-          print(os.path.exists(pretrained_path))
-          raise ValueError("Cannot load the checkpoin! Oh no oh no oh no")
-
-      # Initialize optimizer state from whatever params we ended up with
-      # (loaded or freshly initialized). This is correct for both paths:
-      # a fine-tuning run starts with fresh moment buffers, which is what
-      # we want when changing the learning-rate schedule.
       init_opt = jax.pmap(self._opt_init)
       self._opt_state = init_opt(self._params)
 
@@ -581,7 +520,12 @@ class Experiment(experiment.AbstractExperiment):
     for k, v in summary.items():
       summary[k] = np.array(v)
 
-    score = summary['score/eval']
+    # `_eval_epoch` produces only language-prefixed keys (e.g.
+    # 'latin/score/eval'); there is no bare 'score/eval'. Use the first
+    # eval language as the model-selection metric.
+    eval_lang = self.config.dataset.eval_language[0]
+    score_key = f'{eval_lang}/score/eval'
+    score = summary[score_key]
     logging.info('[Step %d] eval_score=%.2f', global_step, score)
 
     # Log outputs
@@ -606,8 +550,8 @@ class Experiment(experiment.AbstractExperiment):
       with open(score_path, 'w') as f:
         f.write(f'{global_step} {best_score}')
 
-    # Log best score
-    summary['score/eval_best'] = best_score
+    # Log best score (prefixed to match score_key above).
+    summary[f'{eval_lang}/score/eval_best'] = best_score
 
     return summary
 
@@ -758,69 +702,6 @@ class Experiment(experiment.AbstractExperiment):
     return summary
 
 
-class DiskCheckpointer(jl_utils.InMemoryCheckpointer):
-  """Wraps InMemoryCheckpointer to also persist snapshots to disk.
-
-  Each save() writes a pickle file to config.checkpoint_dir with the same
-  schema as the released Aeneas checkpoint (params, model_config,
-  region_map), so saved files are immediately usable by inference_example.py.
-  """
-
-  def __init__(self, config, mode):
-    super().__init__(config, mode)
-    self._checkpoint_dir = config.checkpoint_dir
-    os.makedirs(self._checkpoint_dir, exist_ok=True)
-
-  def save(self, ckpt_series: str) -> None:
-    # Run the in-memory save (handles snapshotting, rotation, logging).
-    super().save(ckpt_series)
-
-    # Pull the snapshot we just stored out of the global dict.
-    series = jl_utils.GLOBAL_CHECKPOINT_DICT[ckpt_series]
-    snapshot = series.history[-1]
-    snap_id = snapshot.id
-    snap_state = snapshot.pickle_nest.to_dict()
-
-    exp_state = snap_state.get('experiment_module', {})
-
-    # _params is replicated across devices; take device 0 and bring to host.
-    params = exp_state.get('_params', None)
-    if params is not None:
-      params = jax.tree_util.tree_map(
-          lambda x: x[0] if hasattr(x, 'ndim') and x.ndim > 0 else x, params
-      )
-      params = jax.device_get(params)
-
-    payload = {
-        'params': params,
-        'model_config': _LATEST_EXP_INFO.get('model_config'),
-        'region_map': _LATEST_EXP_INFO.get('region_map'),
-        'global_step': exp_state.get('_global_step', None),
-    }
-
-    out_path = os.path.join(
-        self._checkpoint_dir, f'{ckpt_series}_id{snap_id:04d}.pkl'
-    )
-    with open(out_path, 'wb') as f:
-      pickle.dump(payload, f)
-
-    latest_path = os.path.join(
-        self._checkpoint_dir, f'{ckpt_series}_latest.pkl'
-    )
-    with open(latest_path, 'wb') as f:
-      pickle.dump(payload, f)
-
-    logging.info('Wrote disk checkpoint to %s', out_path)
-
-
-def _make_disk_checkpointer(config, mode):
-  return DiskCheckpointer(config, mode)
-
-
 if __name__ == '__main__':
   flags.mark_flag_as_required('config')
-  app.run(functools.partial(
-      platform.main,
-      Experiment,
-      checkpointer_factory=_make_disk_checkpointer,
-  ))
+  app.run(functools.partial(platform.main, Experiment))
