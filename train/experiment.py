@@ -17,6 +17,9 @@ import copy
 import functools
 import glob
 import os
+import pickle
+import threading
+
 from absl import app
 from absl import flags
 from absl import logging
@@ -121,6 +124,10 @@ class Experiment(experiment.AbstractExperiment):
     # regions = regions_greek.union(regions_latin)
     logging.info('Union of %d regions in total.', len(regions))
     assert len(self._region_map['names']) == self.config.model.output_regions
+
+    # Exposed so DiskCheckpointer can embed it in the saved pickle, keeping
+    # saved checkpoints drop-in compatible with inference_example.py.
+    self._checkpoint_model_config = dict(self.config.model)
 
   def optimizer(self):
     config_opt = self.config.optimizer
@@ -701,6 +708,98 @@ class Experiment(experiment.AbstractExperiment):
     return summary
 
 
+class DiskCheckpointer(jl_utils.InMemoryCheckpointer):
+  """InMemoryCheckpointer that also mirrors its snapshots to disk.
+
+  jaxline's InMemoryCheckpointer keeps checkpoints only in the process-local
+  GLOBAL_CHECKPOINT_DICT, so a separate `--jaxline_mode=eval` job sees
+  nothing and loops on "Checkpoint None invalid". This subclass lets the
+  parent build/consume snapshots exactly as designed, and only adds disk
+  persistence of the snapshot history:
+
+    * save():  run super().save() (which appends a SnapshotNT to the
+               in-memory series, already device_get'd to host by
+               maybe_device_get), then pickle the whole series.history
+               list to disk, atomically.
+    * restore() / can_be_restored() / restore_path(): if the in-memory
+               series is empty (fresh process, e.g. an eval job), rebuild
+               it from disk first, then delegate to the parent.
+
+  Because we move jaxline's own snapshot objects rather than poking at
+  `_params`, the parent's snapshot_state()/restore_from_snapshot() code
+  path -- the proven one -- does all the actual state handling.
+  """
+
+  def __init__(self, config, mode):
+    super().__init__(config, mode)
+    self._checkpoint_dir = config.checkpoint_dir
+    os.makedirs(self._checkpoint_dir, exist_ok=True)
+
+  def _disk_path(self, ckpt_series):
+    return os.path.join(self._checkpoint_dir, f'checkpoint_{ckpt_series}.pkl')
+
+  def _load_disk_into_memory(self, ckpt_series):
+    """Populate GLOBAL_CHECKPOINT_DICT[ckpt_series] from disk if present."""
+    path = self._disk_path(ckpt_series)
+    if not os.path.exists(path):
+      return False
+    with open(path, 'rb') as f:
+      history = pickle.load(f)
+    if not history:
+      return False
+    gdict = jl_utils.GLOBAL_CHECKPOINT_DICT
+    if ckpt_series in gdict:
+      series = gdict[ckpt_series]
+    else:
+      # CheckpointNT(active, history): `active` holds the live ConfigDict
+      # state; get_experiment_state() lazily fills it on first access.
+      series = jl_utils.CheckpointNT(threading.local(), [])
+      gdict[ckpt_series] = series
+    series.history.clear()
+    series.history.extend(history)
+    return True
+
+  def save(self, ckpt_series):
+    # Parent builds the in-memory snapshot (host-side, device_get'd).
+    super().save(ckpt_series)
+    series = jl_utils.GLOBAL_CHECKPOINT_DICT[ckpt_series]
+    path = self._disk_path(ckpt_series)
+    tmp = path + f'.tmp.{os.getpid()}'
+    with open(tmp, 'wb') as f:
+      pickle.dump(list(series.history), f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)  # atomic: a concurrent eval never sees a partial file
+    last_id = series.history[-1].id if series.history else None
+    logging.info('DiskCheckpointer: mirrored %s to %s (snapshot id=%s).',
+                 ckpt_series, path, last_id)
+
+  def can_be_restored(self, ckpt_series):
+    if super().can_be_restored(ckpt_series):
+      return True
+    return self._load_disk_into_memory(ckpt_series) and \
+        super().can_be_restored(ckpt_series)
+
+  def restore_path(self, ckpt_series):
+    if not super().can_be_restored(ckpt_series):
+      self._load_disk_into_memory(ckpt_series)
+    return super().restore_path(ckpt_series)
+
+  def restore(self, ckpt_series):
+    if not super().can_be_restored(ckpt_series):
+      if not self._load_disk_into_memory(ckpt_series):
+        raise FileNotFoundError(
+            f'DiskCheckpointer.restore: no checkpoint at '
+            f'{self._disk_path(ckpt_series)}')
+    return super().restore(ckpt_series)
+
+
+def _make_disk_checkpointer(config, mode):
+  return DiskCheckpointer(config, mode)
+
+
 if __name__ == '__main__':
   flags.mark_flag_as_required('config')
-  app.run(functools.partial(platform.main, Experiment))
+  app.run(functools.partial(
+      platform.main,
+      Experiment,
+      checkpointer_factory=_make_disk_checkpointer,
+  ))
