@@ -2,7 +2,7 @@
 
 
 
-#SBATCH --job-name=paleo_train
+#SBATCH --job-name=train
 #SBATCH --account=iscrc_coita            # Use lowercase as seen in saldo/sshare
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=normal                     # Changed from bprod to normal

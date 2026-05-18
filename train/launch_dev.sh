@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=paleo_eval
+#SBATCH --job-name=eval
 #SBATCH --account=iscrc_coita
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=normal
