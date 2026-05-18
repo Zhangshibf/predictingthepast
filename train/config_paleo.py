@@ -235,7 +235,7 @@ def get_config():
   # ---------------------------------------------------------------------------
   config.training_steps = 20_000        # was 1_000_000
   config.log_train_data_interval = 10
-  config.save_checkpoint_interval = 200
+  config.save_checkpoint_interval = 2000
   # We disabled date+region, so the original score formula
   # (mask_acc + region_acc - 0.01 * date_l1) reduces effectively to
   # mask_acc only (region_acc is 0/eps because region_available is always

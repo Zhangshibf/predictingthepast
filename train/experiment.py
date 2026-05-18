@@ -763,14 +763,32 @@ class DiskCheckpointer(jl_utils.InMemoryCheckpointer):
     # Parent builds the in-memory snapshot (host-side, device_get'd).
     super().save(ckpt_series)
     series = jl_utils.GLOBAL_CHECKPOINT_DICT[ckpt_series]
-    path = self._disk_path(ckpt_series)
-    tmp = path + f'.tmp.{os.getpid()}'
+    if not series.history:
+      return
+    last = series.history[-1]
+
+    # (1) Rolling pointer: full history, what the eval job reads. Atomic.
+    rolling = self._disk_path(ckpt_series)
+    tmp = rolling + f'.tmp.{os.getpid()}'
     with open(tmp, 'wb') as f:
       pickle.dump(list(series.history), f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, path)  # atomic: a concurrent eval never sees a partial file
-    last_id = series.history[-1].id if series.history else None
-    logging.info('DiskCheckpointer: mirrored %s to %s (snapshot id=%s).',
-                 ckpt_series, path, last_id)
+    os.replace(tmp, rolling)
+
+    # (2) Permanent per-snapshot file: never overwritten, so every
+    #     checkpoint (one per epoch) is recoverable after the run. Stored
+    #     as a 1-element history list so it restores via the same path.
+    perm = os.path.join(
+        self._checkpoint_dir,
+        f'checkpoint_{ckpt_series}_id{last.id:04d}.pkl')
+    if not os.path.exists(perm):
+      tmp = perm + f'.tmp.{os.getpid()}'
+      with open(tmp, 'wb') as f:
+        pickle.dump([last], f, protocol=pickle.HIGHEST_PROTOCOL)
+      os.replace(tmp, perm)
+
+    logging.info('DiskCheckpointer: saved %s (snapshot id=%s) -> %s + %s',
+                 ckpt_series, last.id, os.path.basename(rolling),
+                 os.path.basename(perm))
 
   def can_be_restored(self, ckpt_series):
     if super().can_be_restored(ckpt_series):
