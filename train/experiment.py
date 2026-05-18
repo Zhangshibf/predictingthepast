@@ -31,7 +31,7 @@ from jaxline import utils as jl_utils
 import numpy as np
 import optax
 from predictingthepast.models.model import Model
-import dataloader
+from predictingthepast.train import dataloader
 from predictingthepast.util import region_names
 import predictingthepast.util.alphabet as alphabet_util
 import predictingthepast.util.loss as loss_util
@@ -165,7 +165,7 @@ class Experiment(experiment.AbstractExperiment):
     return scalars
 
   def _initialize_train(self, rng):
-    # Check we haven't already restored params
+    # Build params only if they were not restored from a checkpoint.
     if self._params is None:
       logging.info(
           'Initializing parameters rather than restoring from checkpoint.'
@@ -188,9 +188,14 @@ class Experiment(experiment.AbstractExperiment):
 
       init_opt = jax.pmap(self._opt_init)
       self._opt_state = init_opt(self._params)
+    else:
+      logging.info('Parameters restored from checkpoint; skipping init.')
 
-      self._train_input = jl_utils.py_prefetch(self._build_train_input)
-      self._train_input = jl_utils.double_buffer_on_gpu(self._train_input)
+    # The input pipeline must be (re)built on every run, whether or not
+    # params were restored -- otherwise self._train_input stays None and
+    # step() fails with "'NoneType' object is not an iterator".
+    self._train_input = jl_utils.py_prefetch(self._build_train_input)
+    self._train_input = jl_utils.double_buffer_on_gpu(self._train_input)
 
   def _build_train_input(self):
     """See base class."""
