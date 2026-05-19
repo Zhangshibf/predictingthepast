@@ -683,20 +683,31 @@ class Experiment(experiment.AbstractExperiment):
       # Normalise and concatenate
       summary[f'{lang}/stats/text_len'] /= total_num_sequences
 
-      summary[f'{lang}/loss/date'] /= summary[f'{lang}/count/date']
-      summary[f'{lang}/loss/date_l1'] /= summary[f'{lang}/count/date']
+      # Guard every normalisation against a zero count. On datasets where a
+      # task is disabled (e.g. no date/region labels) the corresponding
+      # count is 0; dividing by it yields NaN, which then poisons
+      # `score/eval` via the sum below. `eps` keeps disabled-task metrics
+      # cleanly at 0 instead of NaN.
+      eps = 1e-8
 
-      summary[f'{lang}/loss/region'] /= summary[f'{lang}/count/region']
-      summary[f'{lang}/accuracy/region'] /= summary[f'{lang}/count/region']
+      def _safe_div(numer_key, denom_key):
+        denom = summary[denom_key]
+        summary[numer_key] = summary[numer_key] / (denom + eps)
 
-      summary[f'{lang}/loss/mask'] /= summary[f'{lang}/count/mask']
-      summary[f'{lang}/accuracy/mask'] /= summary[f'{lang}/count/mask']
+      _safe_div(f'{lang}/loss/date', f'{lang}/count/date')
+      _safe_div(f'{lang}/loss/date_l1', f'{lang}/count/date')
 
-      summary[f'{lang}/loss/nsp'] /= summary[f'{lang}/count/nsp']
-      summary[f'{lang}/accuracy/nsp'] /= summary[f'{lang}/count/nsp']
+      _safe_div(f'{lang}/loss/region', f'{lang}/count/region')
+      _safe_div(f'{lang}/accuracy/region', f'{lang}/count/region')
 
-      summary[f'{lang}/loss/unk'] /= summary[f'{lang}/count/unk']
-      summary[f'{lang}/accuracy/unk'] /= summary[f'{lang}/count/unk']
+      _safe_div(f'{lang}/loss/mask', f'{lang}/count/mask')
+      _safe_div(f'{lang}/accuracy/mask', f'{lang}/count/mask')
+
+      _safe_div(f'{lang}/loss/nsp', f'{lang}/count/nsp')
+      _safe_div(f'{lang}/accuracy/nsp', f'{lang}/count/nsp')
+
+      _safe_div(f'{lang}/loss/unk', f'{lang}/count/unk')
+      _safe_div(f'{lang}/accuracy/unk', f'{lang}/count/unk')
 
       summary[f'{lang}/score/eval'] = (
           summary[f'{lang}/accuracy/mask']
