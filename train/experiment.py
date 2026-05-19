@@ -539,10 +539,9 @@ class Experiment(experiment.AbstractExperiment):
     score = summary[score_key]
     logging.info('[Step %d] eval_score=%.2f', global_step, score)
 
-    # Log outputs
-    checkpoint_dir = jl_utils.get_checkpoint_dir(
-        FLAGS.config, jax.process_index()
-    )
+    # Log outputs. jaxline has no get_checkpoint_dir in this version; the
+    # checkpoint directory is available directly on the top-level config.
+    checkpoint_dir = FLAGS.config.checkpoint_dir
     score_path = os.path.join(checkpoint_dir, 'best_score.txt')
 
     # Check for preexisting outputs
@@ -652,12 +651,12 @@ class Experiment(experiment.AbstractExperiment):
     summary = {}
     total_num_sequences = 0
 
-    # Prepare directories for storing model log
-    checkpoint_dir = jl_utils.get_checkpoint_dir(
-        FLAGS.config, jax.process_index()
-    )
-    model_log_path = os.path.join(checkpoint_dir, 'model_log')
+    # Prepare directories for storing model log (only if enabled).
     if self.config.evaluation.store_model_log:
+      # jaxline has no get_checkpoint_dir in this version; the checkpoint
+      # directory is available directly on the top-level config.
+      checkpoint_dir = FLAGS.config.checkpoint_dir
+      model_log_path = os.path.join(checkpoint_dir, 'model_log')
       if os.path.isdir(model_log_path):
         map(os.remove, glob.glob(model_log_path + '/*'))
       else:
