@@ -40,14 +40,15 @@ from absl import logging
 import jax
 import numpy as np
 from jaxline import utils as jl_utils
-from ml_collections import config_flags
 
 import experiment as experiment_lib
 
 
 FLAGS = flags.FLAGS
-config_flags.DEFINE_config_file(
-    'config', None, 'Path to the eval config (e.g. config_paleo_eval.py).')
+# NOTE: do not define a '--config' flag here. Importing `experiment` pulls in
+# jaxline.platform, which already registers '--config' (a config_flags
+# config_file flag). Redefining it raises DuplicateFlagError. We simply read
+# FLAGS.config, which jaxline has already set up.
 flags.DEFINE_string('series', 'latest', 'Checkpoint series name.')
 flags.DEFINE_string('csv_out', '', 'Optional path to also write a CSV.')
 flags.DEFINE_bool('inspect', False,
@@ -209,5 +210,6 @@ def main(_):
 
 
 if __name__ == '__main__':
-  flags.mark_flag_as_required('config')
+  # '--config' is already defined and required by jaxline.platform (imported
+  # via `experiment`); we do not re-declare or re-mark it here.
   app.run(main)
