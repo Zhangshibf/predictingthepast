@@ -29,9 +29,8 @@ echo "Starting eval on dev set"
 echo "Time: $(date)"
 echo "---------------------------------------"
 
-python experiment.py --config=config_paleo_eval.py \
-    --jaxline_mode=eval \
-    --logtostderr
+python eval_all_checkpoints.py --config=config_paleo_eval.py \
+    --csv_out=dev_scores.csv --logtostderr
 
 EVAL_EXIT=$?
 echo "Eval finished with exit code $EVAL_EXIT"
