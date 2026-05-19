@@ -81,7 +81,7 @@ def get_config():
   config.experiment_kwargs = config_dict.ConfigDict(
       dict(
           config=dict(
-              random_seed=4,
+              random_seed=32,
               pretrained_checkpoint_path='/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint/aeneas_117149994_2.pkl',
               random_mode_train=config.get_ref('random_mode_train'),
               random_mode_eval=config.get_ref('random_mode_eval'),
