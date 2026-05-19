@@ -233,7 +233,7 @@ def get_config():
   # ---------------------------------------------------------------------------
   # Training loop.
   # ---------------------------------------------------------------------------
-  config.training_steps = 20_000        # was 1_000_000
+  config.training_steps = 25_000        # was 1_000_000
   config.log_train_data_interval = 10
   config.save_checkpoint_interval = 400
   # We disabled date+region, so the original score formula
