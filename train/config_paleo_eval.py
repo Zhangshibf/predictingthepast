@@ -223,7 +223,7 @@ def get_config():
               ),
               evaluation=dict(
                   use_jit=True,
-                  batch_size=16,    # was 1; 16x speedup, no metric impact
+                  batch_size=1,
                   mode='valid',
                   store_model_log=False,
                   store_model_log_steps=100,
