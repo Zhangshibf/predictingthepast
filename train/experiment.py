@@ -129,6 +129,32 @@ class Experiment(experiment.AbstractExperiment):
     # saved checkpoints drop-in compatible with inference_example.py.
     self._checkpoint_model_config = dict(self.config.model)
 
+    # Load pretrained weights, if a path is given in the config. This makes
+    # training a *fine-tune* of an existing checkpoint rather than a
+    # from-scratch run. The released Aeneas checkpoint is a flat pickle
+    # ({'params': ..., 'model_config': ..., 'region_map': ...}); we take its
+    # 'params' and replicate it across local devices to match the shape the
+    # pmap'd update function expects. The optimizer state is still built
+    # fresh in _initialize_train (we fine-tune, not resume).
+    pretrained_path = self.config.get('pretrained_checkpoint_path', None)
+    if mode == 'train' and pretrained_path:
+      self._load_pretrained_checkpoint(pretrained_path)
+
+  def _load_pretrained_checkpoint(self, path):
+    """Loads params from a flat (inference-format) checkpoint pickle."""
+    logging.info('Loading pretrained checkpoint from %s', path)
+    with open(path, 'rb') as f:
+      checkpoint = pickle.load(f)
+    if 'params' not in checkpoint:
+      raise KeyError(
+          f"Pretrained checkpoint {path} has no 'params' key; keys present: "
+          f'{list(checkpoint.keys())}')
+    params = checkpoint['params']
+    # Replicate across local devices so it matches init_net's pmap output.
+    self._params = jl_utils.bcast_local_devices(params)
+    logging.info('Pretrained params loaded and replicated across %d device(s).',
+                 jax.local_device_count())
+
   def optimizer(self):
     config_opt = self.config.optimizer
 
@@ -165,7 +191,9 @@ class Experiment(experiment.AbstractExperiment):
     return scalars
 
   def _initialize_train(self, rng):
-    # Build params only if they were not restored from a checkpoint.
+    # Build params only if they were not loaded from a pretrained checkpoint
+    # (see _load_pretrained_checkpoint, called from __init__) or restored by
+    # the checkpointer.
     if self._params is None:
       logging.info(
           'Initializing parameters rather than restoring from checkpoint.'
@@ -185,11 +213,17 @@ class Experiment(experiment.AbstractExperiment):
           vision_img=batch.get('vision_img'),
           vision_available=batch.get('vision_available'),
       )
+    else:
+      logging.info('Using preloaded parameters (pretrained checkpoint or '
+                   'restored state); skipping random init.')
 
+    # The optimizer state must be built whenever it does not already exist.
+    # When params were loaded from a pretrained checkpoint, __init__ left
+    # _opt_state as None on purpose -- we fine-tune with a *fresh* optimizer
+    # state rather than resuming the pretrained run's optimizer.
+    if self._opt_state is None:
       init_opt = jax.pmap(self._opt_init)
       self._opt_state = init_opt(self._params)
-    else:
-      logging.info('Parameters restored from checkpoint; skipping init.')
 
     # The input pipeline must be (re)built on every run, whether or not
     # params were restored -- otherwise self._train_input stays None and
