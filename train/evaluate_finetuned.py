@@ -113,19 +113,85 @@ def cer(pred: str, gt: str) -> float:
 
 
 # --------------------------------------------------------------------------
-# Checkpoint loading (mirrors inference_example.load_checkpoint)
+# Checkpoint loading
+#
+# Two schemas are supported:
+#
+#  1. Flat (inference) schema -- what the released aeneas_117149994_2.pkl is.
+#     A dict: {'params': <pytree>, 'model_config': <dict>, 'region_map': ...}.
+#     `params` is host-side (un-replicated). `model_config` directly
+#     constructs the model.
+#
+#  2. Jaxline snapshot schema -- what our DiskCheckpointer writes.
+#     A list with one SnapshotNT(id, pickle_nest), where pickle_nest is a
+#     ConfigDict containing experiment_module with snapshotted CHECKPOINT_ATTRS.
+#     `params` is REPLICATED across local devices (leading device axis added
+#     by pmap during training), so we de-replicate. `model_config` is not in
+#     the snapshot -- we read it from the config file passed alongside.
 # --------------------------------------------------------------------------
 
-def load_checkpoint(path, language='latin'):
+def _is_jaxline_snapshot(obj):
+    """Heuristic: a list whose first element looks like SnapshotNT."""
+    if not isinstance(obj, list) or not obj:
+        return False
+    first = obj[0]
+    return (hasattr(first, '_fields')
+            and 'id' in first._fields
+            and 'pickle_nest' in first._fields)
+
+
+def _extract_params_from_snapshot(snapshot_list):
+    """Pull host-side, un-replicated params out of a jaxline snapshot list."""
+    snap = snapshot_list[-1]  # one snapshot in our files; take latest anyway.
+    nest = snap.pickle_nest
+    if hasattr(nest, 'to_dict'):
+        nest = nest.to_dict()
+    exp_state = nest.get('experiment_module', {})
+    if hasattr(exp_state, 'to_dict'):
+        exp_state = exp_state.to_dict()
+    params = exp_state.get('_params') or exp_state.get('params')
+    if params is None:
+        raise KeyError(
+            "Snapshot has no '_params' / 'params' in experiment_module. "
+            f"Keys present: {list(exp_state.keys())}")
+    # Params are replicated across local devices (leading axis); take device 0.
+    params = jax.tree_util.tree_map(
+        lambda x: x[0] if hasattr(x, 'ndim') and x.ndim > 0 else x, params)
+    return params
+
+
+def load_checkpoint(path, model_config_override=None, language='latin'):
+    """Load params + build forward fn from either a flat or jaxline checkpoint.
+
+    Args:
+      path: pickle file path.
+      model_config_override: dict for Model(**config). REQUIRED when the
+        checkpoint is a jaxline snapshot (snapshots do not carry the model
+        config); IGNORED when the checkpoint is flat.
+    """
     with open(path, 'rb') as f:
         checkpoint = pickle.load(f)
-    if 'params' not in checkpoint or 'model_config' not in checkpoint:
-        raise KeyError(
-            f"{path} is not in the flat inference schema (need keys "
-            f"'params' and 'model_config'; got {list(checkpoint.keys())}). "
-            f"If this is a jaxline snapshot, convert it first.")
-    params = jax.device_put(checkpoint['params'])
-    model = Model(**checkpoint['model_config'])
+
+    if _is_jaxline_snapshot(checkpoint):
+        if model_config_override is None:
+            raise ValueError(
+                f"{path} is a jaxline snapshot; pass --config so model_config "
+                f"can be read from it.")
+        params = _extract_params_from_snapshot(checkpoint)
+        model_config = dict(model_config_override)
+    elif isinstance(checkpoint, dict) and 'params' in checkpoint \
+            and 'model_config' in checkpoint:
+        params = checkpoint['params']
+        model_config = checkpoint['model_config']
+    else:
+        kind = type(checkpoint).__name__
+        keys = (list(checkpoint.keys())
+                if isinstance(checkpoint, dict) else 'N/A')
+        raise ValueError(
+            f"{path}: unrecognised checkpoint schema (type={kind}, keys={keys}).")
+
+    params = jax.device_put(params)
+    model = Model(**model_config)
     forward = model.apply
     if language == 'latin':
         alphabet = util_alphabet.LatinAlphabet()
@@ -133,7 +199,7 @@ def load_checkpoint(path, language='latin'):
         alphabet = util_alphabet.GreekAlphabet()
     else:
         raise ValueError(f'Unknown language: {language}')
-    vocab_char_size = checkpoint['model_config']['vocab_char_size']
+    vocab_char_size = model_config['vocab_char_size']
     return params, forward, alphabet, vocab_char_size
 
 
@@ -491,7 +557,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--checkpoint', required=True,
-                        help='Path to a flat (inference-format) checkpoint pickle.')
+                        help='Path to a checkpoint pickle. Accepts both the '
+                             'released flat schema (dict with "params" + '
+                             '"model_config") and jaxline DiskCheckpointer '
+                             'snapshots (list of SnapshotNT). For snapshots, '
+                             '--config is required to read the model config.')
+    parser.add_argument('--config',
+                        help='Path to config_paleo_eval.py. REQUIRED if '
+                             '--checkpoint is a jaxline snapshot. The '
+                             'model_config is taken from '
+                             'config.experiment_kwargs.config.model.')
     parser.add_argument('--windows', required=True,
                         help='aeneas_test_windows.json')
     parser.add_argument('--damages', required=True,
@@ -513,9 +588,28 @@ def main():
     parser.add_argument('--language', default='latin', choices=['latin', 'greek'])
     args = parser.parse_args()
 
+    # If a config file is provided, read the model architecture out of it.
+    # This is REQUIRED when the checkpoint is a jaxline snapshot
+    # (DiskCheckpointer output); IGNORED when it's a flat inference pickle.
+    model_config_override = None
+    if args.config:
+        print(f"Loading config: {args.config}")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("eval_config", args.config)
+        cfg_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cfg_mod)
+        cfg = cfg_mod.get_config()
+        model_config_override = dict(cfg.experiment_kwargs.config.model)
+        print(f"  read model_config "
+              f"(emb_dim={model_config_override.get('emb_dim')}, "
+              f"num_layers={model_config_override.get('num_layers')})")
+
     print(f"Loading checkpoint: {args.checkpoint}")
     params, forward, alphabet, vocab_char_size = load_checkpoint(
-        args.checkpoint, language=args.language)
+        args.checkpoint,
+        model_config_override=model_config_override,
+        language=args.language,
+    )
 
     print(f"Loading windows: {args.windows}")
     with open(args.windows, 'r', encoding='utf-8') as f:

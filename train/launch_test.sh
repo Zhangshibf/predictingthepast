@@ -22,10 +22,11 @@ export NCCL_DEBUG=INFO
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-# Paths -- absolute so a stray `cd` can't break them.
+
 PROJECT_ROOT="/leonardo_work/IscrC_CoIta/predictingthepast"
 WINDOWS_PATH='/leonardo_work/IscrC_CoIta/predictingthepast/aeneas_test_windows.json'
 DAMAGES_PATH="/leonardo_work/IscrC_CoIta/predictingthepast/damage_spans_aeneas.json"
+CONFIG_PATH="${PROJECT_ROOT}/train/config_paleo_eval.py"
 
 cd "${PROJECT_ROOT}/train"
 
@@ -52,7 +53,8 @@ for SEED in "${SEEDS[@]}"; do
         --damages "${DAMAGES_PATH}" \
         --setting both \
         --max-windows 2 \
-        --out-prefix "smoke_seed${SEED}"
+        --out-prefix "smoke_seed${SEED}"\
+        --config "${CONFIG_PATH}"
 
     SEED_EXIT=$?
     echo "seed=${SEED} exit code: ${SEED_EXIT}"
