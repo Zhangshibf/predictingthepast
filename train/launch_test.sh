@@ -46,7 +46,7 @@ for SEED in "${SEEDS[@]}"; do
         continue
     fi
 
-    python evaluate_aeneas.py \
+    python evaluate_finetuned.py \
         --checkpoint "${CHECKPOINT_PATH}" \
         --windows "${WINDOWS_PATH}" \
         --damages "${DAMAGES_PATH}" \
