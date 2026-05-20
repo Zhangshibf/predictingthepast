@@ -165,7 +165,7 @@ def main(_):
   rng = init_rng
 
   for ckpt_id, path in ckpts:
-    with open('/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint/aeneas_117149994_2.pkl', 'rb') as f:
+    with open(path, 'rb') as f:
       pkl_obj = pickle.load(f)
     params, global_step = _extract_params_and_step(pkl_obj)
     if global_step is None:
