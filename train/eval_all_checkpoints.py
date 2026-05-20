@@ -163,7 +163,7 @@ def main(_):
 
   results = []
   rng = init_rng
-
+  ckpts=(0,'/leonardo_work/IscrC_CoIta/predictingthepast/checkpoint/aeneas_117149994_2.pkl')
   for ckpt_id, path in ckpts:
     with open(path, 'rb') as f:
       pkl_obj = pickle.load(f)
