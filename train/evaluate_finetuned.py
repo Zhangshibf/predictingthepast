@@ -279,10 +279,55 @@ def extract_predictions_for_damages(restoration, damage_records, setting):
 # Main evaluation loop for one setting
 # --------------------------------------------------------------------------
 
+def _debug_print_window(doc_name, setting, text, damaged_text, dmg_records,
+                        results_for_this_window, topn):
+    """Per-window verbose dump (smoke-test mode)."""
+    print(f"\n  ---- {doc_name}  [setting={setting}] ----")
+    print(f"  window_len={len(text)}  damaged_len={len(damaged_text)}  "
+          f"n_damages={len(dmg_records)}")
+
+    # Show each damage region in context, so we can eyeball that the
+    # mask tokens landed where we expected. Print a ~30-char window
+    # of damaged text around each damage, with the mask portion bracketed.
+    pad = 25
+    for i, rec in enumerate(dmg_records):
+        ds, de = rec['damaged_start'], rec['damaged_end']
+        left = max(0, ds - pad)
+        right = min(len(damaged_text), de + pad)
+        before = damaged_text[left:ds]
+        mask = damaged_text[ds:de]
+        after = damaged_text[de:right]
+        print(f"    dmg[{i}] tag={rec['tag']!r} class={rec['length_class']!r} "
+              f"orig=[{rec['orig_start']}:{rec['orig_end']}) len="
+              f"{rec['orig_end'] - rec['orig_start']}")
+        print(f"      gt:     {rec['orig']!r}")
+        print(f"      context: ...{before}[{mask}]{after}...")
+
+    # Per-damage prediction quality.
+    for i, r in enumerate(results_for_this_window):
+        gt = r.ground_truth or ''
+        pred = r.predicted_sequence
+        this_cer = cer(pred, gt)
+        cand_strs = [c[0] for c in r.predicted_sequences[:topn]]
+        hit = gt in cand_strs
+        # Top-3 with scores, more is too noisy for a smoke test.
+        top3 = ', '.join(f'{c[0]!r}@{c[1]:.3f}'
+                         for c in r.predicted_sequences[:3])
+        print(f"    pred[{i}] top1={pred!r}  CER={this_cer:.3f}  "
+              f"top{topn}_hit={'YES' if hit else 'no '}")
+        print(f"      top3: {top3}")
+
+
 def evaluate_setting(windows, damages_by_doc, setting, forward, params,
                      alphabet, vocab_char_size, topn=5, beam_width=200,
-                     unk_max_len=20, max_windows=None, verbose=True):
-    """Returns (results: list[PredictionResult], aggregate: dict)."""
+                     unk_max_len=20, max_windows=None, verbose=True,
+                     debug=False):
+    """Returns (results: list[PredictionResult], aggregate: dict).
+
+    When debug=True, prints detailed per-window information: damage
+    positions, masked-text context, top predictions, per-damage CER, and
+    top-N hit. Intended for smoke-testing with --max-windows.
+    """
     results = []
     n_windows_used = 0
     n_windows_skipped = 0
@@ -305,11 +350,14 @@ def evaluate_setting(windows, damages_by_doc, setting, forward, params,
         # Skip if too short or too long for the model.
         if len(damaged_text) < inference.MIN_TEXT_LEN:
             n_windows_skipped += 1
+            if debug:
+                print(f"  [skip] {doc_name}: damaged_text too short "
+                      f"({len(damaged_text)} < {inference.MIN_TEXT_LEN})")
             continue
         if len(damaged_text) >= inference.TEXT_LEN:
             n_windows_skipped += 1
-            if verbose:
-                print(f"  skipping {doc_name}: damaged_text too long "
+            if verbose or debug:
+                print(f"  [skip] {doc_name}: damaged_text too long "
                       f"({len(damaged_text)} >= {inference.TEXT_LEN})")
             continue
 
@@ -325,7 +373,7 @@ def evaluate_setting(windows, damages_by_doc, setting, forward, params,
             )
         except Exception as e:
             n_failures += 1
-            if verbose:
+            if verbose or debug:
                 print(f"  restore() failed on {doc_name}: {e}",
                       file=sys.stderr)
             continue
@@ -333,10 +381,10 @@ def evaluate_setting(windows, damages_by_doc, setting, forward, params,
         top_preds, candidates = extract_predictions_for_damages(
             restoration, dmg_records, setting)
 
+        results_for_this_window = []
         for rec, top_pred, cand_list in zip(dmg_records, top_preds, candidates):
-            # Truncate per-damage candidate list to topn.
             top_cands = cand_list[:topn]
-            results.append(PredictionResult(
+            r = PredictionResult(
                 original_text=text,
                 masked_text=damaged_text,
                 predicted_sequence=top_pred,
@@ -347,11 +395,17 @@ def evaluate_setting(windows, damages_by_doc, setting, forward, params,
                 length_class=rec['length_class'],
                 doc_name=doc_name,
                 setting=setting,
-            ))
+            )
+            results.append(r)
+            results_for_this_window.append(r)
             n_damages_total += 1
 
+        if debug:
+            _debug_print_window(doc_name, setting, text, damaged_text,
+                                dmg_records, results_for_this_window, topn)
+
         n_windows_used += 1
-        if verbose and n_windows_used % 50 == 0:
+        if verbose and not debug and n_windows_used % 50 == 0:
             elapsed = time.time() - t0
             rate = n_windows_used / max(elapsed, 1e-6)
             print(f"  [{setting}] {n_windows_used} windows / "
@@ -477,6 +531,14 @@ def main():
     settings = (['known', 'unknown'] if args.setting == 'both'
                 else [args.setting])
 
+    # When --max-windows is set, this is a smoke test: turn on per-window
+    # debug output so the user can verify alignment and predictions by eye
+    # before launching the full run.
+    debug = args.max_windows is not None
+    if debug:
+        print(f"\n[DEBUG MODE] --max-windows={args.max_windows} -> "
+              f"printing detailed per-window output.")
+
     for setting in settings:
         print(f"\n----- Evaluating setting '{setting}' -----")
         results, aggregate = evaluate_setting(
@@ -485,6 +547,7 @@ def main():
             topn=args.topn, beam_width=args.beam_width,
             unk_max_len=args.unk_max_len,
             max_windows=args.max_windows,
+            debug=debug,
         )
         _print_report(setting, aggregate, args.topn)
         out_path = f"{args.out_prefix}_{setting}.json"
