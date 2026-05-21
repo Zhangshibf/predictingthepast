@@ -141,7 +141,23 @@ def _is_jaxline_snapshot(obj):
 
 
 def _extract_params_from_snapshot(snapshot_list):
-    """Pull host-side, un-replicated params out of a jaxline snapshot list."""
+    """Pull host-side, un-replicated, unwrapped params out of a jaxline
+    snapshot list.
+
+    The snapshot stores params in two shells:
+      experiment_module['_params'] = {'params': <real tree>, 'params_axes': ...}
+    `params_axes` is T5x sharding metadata, irrelevant for single-device
+    inference. The model's `apply` expects to receive the inner `params`
+    tree (or a FrozenDict with a `params` key — but a plain dict named
+    `params` also works). We unwrap to the inner tree to match what
+    inference_example.load_checkpoint produces from the released flat
+    pickle.
+
+    Also: if training ran under pmap with N>1 devices, every leaf has a
+    leading device axis of size N which we strip. With N==1 there is no
+    such axis (confirmed by inspecting actual snapshots), so we don't
+    strip in that case.
+    """
     snap = snapshot_list[-1]  # one snapshot in our files; take latest anyway.
     nest = snap.pickle_nest
     if hasattr(nest, 'to_dict'):
@@ -154,9 +170,24 @@ def _extract_params_from_snapshot(snapshot_list):
         raise KeyError(
             "Snapshot has no '_params' / 'params' in experiment_module. "
             f"Keys present: {list(exp_state.keys())}")
-    # Params are replicated across local devices (leading axis); take device 0.
-    params = jax.tree_util.tree_map(
-        lambda x: x[0] if hasattr(x, 'ndim') and x.ndim > 0 else x, params)
+
+    # Unwrap {'params': ..., 'params_axes': ...} -> just the params subtree.
+    # The flat (released) checkpoint already has this unwrapped form, so we
+    # only unwrap when both 'params' and 'params_axes' are present.
+    if (isinstance(params, dict)
+            and set(params.keys()) >= {'params', 'params_axes'}):
+        params = params['params']
+
+    # Strip leading device axis only if every leaf has one (N>1-device case).
+    leaves = jax.tree_util.tree_leaves(params)
+    n_devices = jax.local_device_count()
+    replicated = (
+        n_devices > 1
+        and all(hasattr(l, 'ndim') and l.ndim > 0 and l.shape[0] == n_devices
+                for l in leaves)
+    )
+    if replicated:
+        params = jax.tree_util.tree_map(lambda x: x[0], params)
     return params
 
 
