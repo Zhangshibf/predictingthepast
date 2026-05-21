@@ -21,7 +21,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export NCCL_DEBUG=INFO
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-
+export PYTHONUNBUFFERED=1
 
 PROJECT_ROOT="/leonardo_work/IscrC_CoIta/predictingthepast"
 WINDOWS_PATH='/leonardo_work/IscrC_CoIta/predictingthepast/aeneas_test_windows.json'
@@ -33,7 +33,7 @@ cd "${PROJECT_ROOT}/train"
 SEEDS=(4 42 123 1337 2024)
 
 for SEED in "${SEEDS[@]}"; do
-    CHECKPOINT_PATH="${PROJECT_ROOT}/finetuned_seed${SEED}/checkpoint_latest_id0000.pkl"
+    CHECKPOINT_PATH="${PROJECT_ROOT}/finetuned_seed${SEED}/checkpoint_flat.pkl"
 
     echo
     echo "========================================="
@@ -53,8 +53,7 @@ for SEED in "${SEEDS[@]}"; do
         --damages "${DAMAGES_PATH}" \
         --setting both \
         --max-windows 2 \
-        --out-prefix "smoke_seed${SEED}"\
-        --config "${CONFIG_PATH}"
+        --out-prefix "smoke_seed${SEED}"
 
     SEED_EXIT=$?
     echo "seed=${SEED} exit code: ${SEED_EXIT}"
