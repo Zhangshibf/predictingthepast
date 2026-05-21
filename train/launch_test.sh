@@ -30,7 +30,7 @@ CONFIG_PATH="${PROJECT_ROOT}/train/config_paleo_eval.py"
 
 cd "${PROJECT_ROOT}/train"
 
-SEEDS=(4 42 123 1337 2024)
+SEEDS=(4)
 
 for SEED in "${SEEDS[@]}"; do
     CHECKPOINT_PATH="${PROJECT_ROOT}/finetuned_seed${SEED}/checkpoint_flat.pkl"
@@ -53,6 +53,7 @@ for SEED in "${SEEDS[@]}"; do
         --damages "${DAMAGES_PATH}" \
         --setting both \
         --max-windows 2 \
+        --topn 10\
         --out-prefix "smoke_seed${SEED}"
 
     SEED_EXIT=$?

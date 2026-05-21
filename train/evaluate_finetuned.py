@@ -226,6 +226,23 @@ def extract_predictions_for_damages(restoration, damage_records, setting):
             for i, (rs, re_inc) in enumerate(runs):
                 candidates[i].append((pred_text[rs:re_inc + 1], score))
 
+    # Beam search in restore() runs over the WHOLE window, so beams differ
+    # in their joint prediction of all damages. When we slice candidates
+    # per-damage, multiple beams that agree on damage i but disagree on
+    # damage j collapse into apparent duplicates for damage i. To make
+    # "top-N hit" mean "top N distinct predictions", we dedupe per-damage
+    # by candidate string, keeping the highest score for each distinct
+    # string. Order is preserved by first-occurrence (which is also the
+    # highest-scoring occurrence, since restoration.predictions is sorted).
+    deduped = []
+    for cand_list in candidates:
+        seen = {}
+        for s, sc in cand_list:
+            if s not in seen:
+                seen[s] = sc
+        deduped.append(list(seen.items()))
+    candidates = deduped
+
     top_preds = [c[0][0] if c else '' for c in candidates]
     return top_preds, candidates
 
@@ -436,7 +453,7 @@ def main():
                    help='damage_spans_aeneas.json')
     p.add_argument('--setting', choices=['known', 'unknown', 'both'],
                    default='both')
-    p.add_argument('--topn', type=int, default=5)
+    p.add_argument('--topn', type=int, default=10)
     p.add_argument('--beam-width', type=int,
                    default=inference.RESTORATION_BEAM_WIDTH)
     p.add_argument('--unk-max-len', type=int,
