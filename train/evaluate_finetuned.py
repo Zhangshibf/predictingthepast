@@ -171,12 +171,15 @@ def _extract_params_from_snapshot(snapshot_list):
             "Snapshot has no '_params' / 'params' in experiment_module. "
             f"Keys present: {list(exp_state.keys())}")
 
-    # Unwrap {'params': ..., 'params_axes': ...} -> just the params subtree.
-    # The flat (released) checkpoint already has this unwrapped form, so we
-    # only unwrap when both 'params' and 'params_axes' are present.
+    # The snapshot stores params as a TWO-key dict:
+    #     {'params': <real params tree>, 'params_axes': <T5x sharding metadata>}
+    # `model.apply` expects to be called as `apply({'params': <tree>}, ...)`:
+    # a dict of named collections, where the params collection lives under
+    # the 'params' key. So we keep the 'params' key and drop only the
+    # 'params_axes' sibling (irrelevant for single-device inference).
     if (isinstance(params, dict)
             and set(params.keys()) >= {'params', 'params_axes'}):
-        params = params['params']
+        params = {'params': params['params']}
 
     # Strip leading device axis only if every leaf has one (N>1-device case).
     leaves = jax.tree_util.tree_leaves(params)
